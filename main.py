@@ -3,13 +3,14 @@ import logging
 import base64
 import io
 import tempfile
+import time
 from typing import Dict, Optional, Tuple
 from fastapi import FastAPI, Form, HTTPException
 from fastapi.responses import Response
 from twilio.twiml.messaging_response import MessagingResponse
 from langchain_google_genai import ChatGoogleGenerativeAI, HarmBlockThreshold, HarmCategory, GoogleGenerativeAIEmbeddings
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.embeddings import OpenAIEmbeddings
+# REMOVED: from langchain_community.embeddings import OpenAIEmbeddings
 from langchain.memory import ConversationBufferWindowMemory
 from langchain.chains import ConversationChain
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -36,69 +37,184 @@ app = FastAPI(title="WhatsApp Chatbot", version="1.0.0")
 conversation_memory_store: Dict[str, ConversationBufferWindowMemory] = {}
 
 # Global RAG store - stores vector stores and document summaries for each user
-rag_store: Dict[str, Dict] = {}  # {phone_number: {"vectorstore": FAISS, "summary": str}}
+rag_store: Dict[str, Dict] = {}
 
-#Initialize Gemini LLM
-# Ensure the correct environment variable is used by the SDK: GOOGLE_API_KEY
-google_api_key = os.getenv("GOOGLE_API_KEY")
-if not google_api_key:
-    raise ValueError("GOOGLE_API_KEY environment variable is required")
+# CRITICAL FIX: Properly handle Google API key to avoid SecretStr issues
+def get_google_api_key():
+    """Get Google API key as a proper string, handling SecretStr conversion"""
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise ValueError("GOOGLE_API_KEY environment variable is required")
+    
+    # Handle both string and SecretStr types
+    if hasattr(api_key, 'get_secret_value'):
+        # This is a SecretStr object from pydantic
+        return api_key.get_secret_value()
+    else:
+        # This is already a string
+        return str(api_key)
 
-# Convert to string immediately to avoid SecretStr issues
-google_api_key = str(google_api_key)
+# Get the API key properly
+google_api_key = get_google_api_key()
+logger.info(f"Google API key loaded (length: {len(google_api_key)})")
 
-# 2. Use ChatGoogleGenerativeAI instead of ChatOpenAI for the main LLM.
-# The user's prompt suggested a model named "gemini-2.5-flash", but the current latest models are 1.5 versions.
-# We'll use "gemini-1.5-flash" as a suitable alternative.
+# Validate the API key format
+if not google_api_key.startswith('AIza') or len(google_api_key) < 30:
+    logger.warning("Google API key format seems invalid")
+
+# Initialize Gemini LLM
 model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
-llm = ChatGoogleGenerativeAI(
-    model=model_name,
-    temperature=0.7,
-    google_api_key=google_api_key,
-    safety_settings={
-        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-    },
-)
 
-# Multimodal LLM for image processing (Gemini 1.5 Flash)
-# 4. Use ChatGoogleGenerativeAI for multimodal capabilities.
-# The same model can handle both text and image input.
-multimodal_llm = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash",
-    temperature=0.3,
-    google_api_key=google_api_key,
-)
+try:
+    llm = ChatGoogleGenerativeAI(
+        model=model_name,
+        temperature=0.7,
+        google_api_key=google_api_key,
+        safety_settings={
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+        },
+    )
+    logger.info(f"Successfully initialized main LLM with model: {model_name}")
+except Exception as e:
+    logger.error(f"Failed to initialize main LLM: {e}")
+    raise
+
+# Multimodal LLM for image processing
+try:
+    multimodal_llm = ChatGoogleGenerativeAI(
+        model="gemini-1.5-flash",
+        temperature=0.3,
+        google_api_key=google_api_key,
+    )
+    logger.info("Successfully initialized multimodal LLM")
+except Exception as e:
+    logger.error(f"Failed to initialize multimodal LLM: {e}")
+    multimodal_llm = None
 
 # Configure Google Generative AI for audio processing
-genai.configure(api_key=google_api_key)
-
-# Initialize embeddings model for RAG with multiple fallbacks
 try:
-    logger.info("Attempting to use HuggingFace embeddings for RAG")
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2",
-        model_kwargs={'device': 'cpu'}
-    )
-    logger.info("Successfully initialized HuggingFace embeddings")
+    genai.configure(api_key=google_api_key)
+    logger.info("Successfully configured Google Generative AI for audio")
 except Exception as e:
-    logger.warning(f"HuggingFace embeddings failed: {e}")
-    try:
-        logger.info("Attempting to use Google embeddings as fallback")
-        embeddings = GoogleGenerativeAIEmbeddings(
-            model="models/embedding-001",
-            google_api_key=google_api_key
-        )
-        logger.info("Successfully initialized Google embeddings")
-    except Exception as e2:
-        logger.error(f"All embedding methods failed: {e2}")
-        # Use a simple dummy embedding for basic functionality
-        logger.warning("Using dummy embeddings - RAG functionality will be limited")
-        embeddings = None
+    logger.error(f"Failed to configure Google Generative AI: {e}")
+    raise
 
-# Replace the process_document function with this improved version:
+# Initialize embeddings model for RAG - Only free alternatives
+embeddings = None
+embedding_model_name = "unknown"
+
+def initialize_free_embeddings():
+    """Initialize embeddings using only free alternatives"""
+    global embeddings, embedding_model_name
+    
+    # Option 1: Try HuggingFace embeddings first (free and reliable)
+    try:
+        logger.info("Attempting to use HuggingFace embeddings for RAG")
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
+            model_kwargs={'device': 'cpu'},
+            encode_kwargs={'normalize_embeddings': True}
+        )
+        embedding_model_name = "HuggingFace"
+        logger.info("Successfully initialized HuggingFace embeddings")
+        return True
+        
+    except Exception as e:
+        logger.warning(f"HuggingFace embeddings failed: {e}")
+        
+        # Option 2: Try alternative HuggingFace model
+        try:
+            logger.info("Trying alternative HuggingFace model")
+            embeddings = HuggingFaceEmbeddings(
+                model_name="paraphrase-MiniLM-L6-v2",
+                model_kwargs={'device': 'cpu'},
+                encode_kwargs={'normalize_embeddings': True}
+            )
+            embedding_model_name = "HuggingFace-Alt"
+            logger.info("Successfully initialized alternative HuggingFace embeddings")
+            return True
+            
+        except Exception as e2:
+            logger.warning(f"Alternative HuggingFace embeddings failed: {e2}")
+            
+            # Option 3: Try sentence-transformers directly if available
+            try:
+                logger.info("Trying sentence-transformers directly")
+                from sentence_transformers import SentenceTransformer
+                
+                class SentenceTransformerEmbeddings:
+                    def __init__(self, model_name="all-MiniLM-L6-v2"):
+                        self.model = SentenceTransformer(model_name)
+                    
+                    def embed_documents(self, texts):
+                        return self.model.encode(texts).tolist()
+                    
+                    def embed_query(self, text):
+                        return self.model.encode([text])[0].tolist()
+                
+                embeddings = SentenceTransformerEmbeddings()
+                embedding_model_name = "SentenceTransformers-Direct"
+                logger.info("Successfully initialized SentenceTransformers direct")
+                return True
+                
+            except Exception as e3:
+                logger.warning(f"Direct SentenceTransformers failed: {e3}")
+                
+                # Option 4: TF-IDF as last resort (completely free, no downloads)
+                try:
+                    logger.info("Falling back to TF-IDF embeddings")
+                    from sklearn.feature_extraction.text import TfidfVectorizer
+                    
+                    class TFIDFEmbeddings:
+                        def __init__(self):
+                            self.vectorizer = TfidfVectorizer(
+                                max_features=1000,
+                                stop_words='english',
+                                ngram_range=(1, 2),
+                                sublinear_tf=True
+                            )
+                            self.is_fitted = False
+                            self.documents_for_fitting = []
+                        
+                        def embed_documents(self, texts):
+                            if not self.is_fitted:
+                                self.documents_for_fitting.extend(texts)
+                                self.vectorizer.fit(self.documents_for_fitting)
+                                self.is_fitted = True
+                            
+                            tfidf_matrix = self.vectorizer.transform(texts)
+                            return tfidf_matrix.toarray().tolist()
+                        
+                        def embed_query(self, text):
+                            if not self.is_fitted:
+                                self.vectorizer.fit([text])
+                                self.is_fitted = True
+                            
+                            query_vector = self.vectorizer.transform([text])
+                            return query_vector.toarray()[0].tolist()
+                    
+                    embeddings = TFIDFEmbeddings()
+                    embedding_model_name = "TF-IDF-Fallback"
+                    logger.info("Successfully initialized TF-IDF embeddings as fallback")
+                    return True
+                    
+                except Exception as e4:
+                    logger.error(f"Even TF-IDF fallback failed: {e4}")
+    
+    return False
+
+# Initialize embeddings with free alternatives only
+embedding_success = initialize_free_embeddings()
+
+if embeddings and embedding_success:
+    logger.info(f"✅ Using {embedding_model_name} embeddings for RAG functionality")
+else:
+    logger.warning("❌ No embedding model available - RAG functionality will be disabled")
+    logger.info("To enable RAG, install sentence-transformers: pip install sentence-transformers")
+    logger.info("Or install scikit-learn for basic TF-IDF: pip install scikit-learn")
 
 def process_document(media_url: str, phone_number: str) -> Tuple[bool, str]:
     """
@@ -117,7 +233,7 @@ def process_document(media_url: str, phone_number: str) -> Tuple[bool, str]:
         # Check if embeddings are available
         if embeddings is None:
             logger.error("No embedding model available")
-            return False, "I'm sorry, the document processing system is not available right now. Please try again later or contact support."
+            return False, "I'm sorry, the document processing system is not available right now. Please install sentence-transformers or scikit-learn for RAG functionality."
         
         # Download the PDF from Twilio with authentication
         account_sid = os.getenv("TWILIO_ACCOUNT_SID")
@@ -196,7 +312,6 @@ def process_document(media_url: str, phone_number: str) -> Tuple[bool, str]:
                             vectorstore.merge_from(batch_vectorstore)
                         
                         # Small delay between batches
-                        import time
                         time.sleep(0.5)
                     
                     logger.info("Successfully created vector store")
@@ -209,7 +324,6 @@ def process_document(media_url: str, phone_number: str) -> Tuple[bool, str]:
                         return False, "I'm sorry, I encountered an error while processing the document embeddings. This might be due to network issues or API limits. Please try again later."
                     
                     # Wait before retry
-                    import time
                     time.sleep(2 ** attempt)  # Exponential backoff
             
             # Generate document summary with error handling
@@ -247,7 +361,7 @@ def process_document(media_url: str, phone_number: str) -> Tuple[bool, str]:
     except Exception as e:
         logger.error(f"Error processing document: {str(e)}")
         return False, "I'm sorry, I encountered an unexpected error while processing the document. Please try again or check if the PDF is valid."
-        
+
 def classify_intent(user_question: str, document_summary: str, conversation_history: str) -> str:
     """
     Classify user intent as 'document' or 'general'.
@@ -683,6 +797,20 @@ async def clear_rag_document(phone_number: str):
         return {"message": f"RAG document cleared for {phone_number}"}
     else:
         return {"message": f"No RAG document found for {phone_number}"}
+
+@app.get("/health")
+async def health_check():
+    """
+    Enhanced health check endpoint with system status
+    """
+    return {
+        "status": "healthy",
+        "embedding_model": embedding_model_name,
+        "has_embeddings": embeddings is not None,
+        "active_conversations": len(conversation_memory_store),
+        "active_documents": len(rag_store),
+        "llm_model": model_name
+    }
 
 if __name__ == "__main__":
     import uvicorn
