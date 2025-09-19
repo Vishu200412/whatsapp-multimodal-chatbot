@@ -147,18 +147,19 @@ def initialize_free_embeddings():
                 
                 class SentenceTransformerEmbeddings:
                     def __init__(self, model_name="all-MiniLM-L6-v2"):
+                        from sentence_transformers import SentenceTransformer
                         self.model = SentenceTransformer(model_name)
-                    
+
                     def embed_documents(self, texts):
                         return self.model.encode(texts).tolist()
-                    
+
                     def embed_query(self, text):
                         return self.model.encode([text])[0].tolist()
-                
-                embeddings = SentenceTransformerEmbeddings()
-                embedding_model_name = "SentenceTransformers-Direct"
-                logger.info("Successfully initialized SentenceTransformers direct")
-                return True
+
+                    def __call__(self, texts):
+                        if isinstance(texts, str):
+                            return self.embed_query(texts)
+                        return self.embed_documents(texts)
                 
             except Exception as e3:
                 logger.warning(f"Direct SentenceTransformers failed: {e3}")
@@ -170,6 +171,7 @@ def initialize_free_embeddings():
                     
                     class TFIDFEmbeddings:
                         def __init__(self):
+                            from sklearn.feature_extraction.text import TfidfVectorizer
                             self.vectorizer = TfidfVectorizer(
                                 max_features=1000,
                                 stop_words='english',
@@ -178,23 +180,30 @@ def initialize_free_embeddings():
                             )
                             self.is_fitted = False
                             self.documents_for_fitting = []
-                        
+
                         def embed_documents(self, texts):
                             if not self.is_fitted:
                                 self.documents_for_fitting.extend(texts)
                                 self.vectorizer.fit(self.documents_for_fitting)
                                 self.is_fitted = True
-                            
+
                             tfidf_matrix = self.vectorizer.transform(texts)
                             return tfidf_matrix.toarray().tolist()
-                        
+
                         def embed_query(self, text):
                             if not self.is_fitted:
                                 self.vectorizer.fit([text])
                                 self.is_fitted = True
-                            
+
                             query_vector = self.vectorizer.transform([text])
                             return query_vector.toarray()[0].tolist()
+
+                        # 👇 Add this to make it compatible with LangChain
+                        def __call__(self, texts):
+                            if isinstance(texts, str):
+                                return self.embed_query(texts)
+                            return self.embed_documents(texts)
+
                     
                     embeddings = TFIDFEmbeddings()
                     embedding_model_name = "TF-IDF-Fallback"
@@ -632,7 +641,7 @@ async def webhook(
             response.message(message)
             
             if success:
-                logger.info(f"Successfully processed PDF for {From}")
+                logger.info(f"Successfully processed PDF for {From}:{message}")
             else:
                 logger.error(f"Failed to process PDF for {From}: {message}")
         
@@ -678,9 +687,21 @@ async def webhook(
                     
                     # Get conversation history for intent classification
                     conversation_history = ""
-                    if user_memory.chat_history and user_memory.chat_history.messages:
-                        recent_messages = user_memory.chat_history.messages[-4:]  # Last 4 messages
-                        conversation_history = "\n".join([f"{msg.__class__.__name__}: {msg.content}" for msg in recent_messages])
+                    try:
+                        # Try different possible attribute names for conversation history
+                        if hasattr(user_memory, 'chat_memory') and user_memory.chat_memory and user_memory.chat_memory.messages:
+                            recent_messages = user_memory.chat_memory.messages[-4:]  # Last 4 messages
+                            conversation_history = "\n".join([f"{msg.__class__.__name__}: {msg.content}" for msg in recent_messages])
+                        elif hasattr(user_memory, 'memory_buffer') and user_memory.memory_buffer:
+                            conversation_history = user_memory.memory_buffer
+                        elif hasattr(user_memory, 'buffer') and user_memory.buffer:
+                            conversation_history = user_memory.buffer
+                        else:
+                            # Fallback: get recent messages from memory
+                            conversation_history = "No recent conversation history available."
+                    except Exception as e:
+                        logger.warning(f"Could not retrieve conversation history: {e}")
+                        conversation_history = "No recent conversation history available."
                     
                     # Classify intent
                     intent = classify_intent(
@@ -737,17 +758,31 @@ async def get_conversation_memory(phone_number: str):
     """
     if phone_number in conversation_memory_store:
         memory = conversation_memory_store[phone_number]
+        # Get conversation count and recent messages with fallback
+        conversation_count = 0
+        recent_messages = []
+        
+        try:
+            if hasattr(memory, 'chat_memory') and memory.chat_memory and memory.chat_memory.messages:
+                conversation_count = len(memory.chat_memory.messages)
+                recent_messages = [
+                    {
+                        "type": msg.__class__.__name__,
+                        "content": msg.content
+                    } 
+                    for msg in memory.chat_memory.messages[-6:]  # Last 6 messages
+                ]
+            elif hasattr(memory, 'memory_buffer') and memory.memory_buffer:
+                conversation_count = 1  # Approximate
+                recent_messages = [{"type": "Buffer", "content": memory.memory_buffer}]
+        except Exception as e:
+            logger.warning(f"Could not retrieve memory details: {e}")
+        
         return {
             "phone_number": phone_number,
             "memory_exists": True,
-            "conversation_count": len(memory.chat_history.messages) if memory.chat_history else 0,
-            "recent_messages": [
-                {
-                    "type": msg.__class__.__name__,
-                    "content": msg.content
-                } 
-                for msg in memory.chat_history.messages[-6:]  # Last 6 messages
-            ] if memory.chat_history else []
+            "conversation_count": conversation_count,
+            "recent_messages": recent_messages
         }
     else:
         return {
