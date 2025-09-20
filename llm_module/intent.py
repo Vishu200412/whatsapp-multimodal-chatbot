@@ -1,5 +1,5 @@
 import logging
-from llm import llm
+from llm_module.llm import llm
 from langchain_core.messages import HumanMessage
 
 logger = logging.getLogger(__name__)
