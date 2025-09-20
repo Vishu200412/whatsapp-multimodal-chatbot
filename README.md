@@ -39,7 +39,7 @@ Create a `.env` file in the project root with:
 
 ```env
 GOOGLE_API_KEY=your_actual_google_api_key_here
-GEMINI_MODEL=gemini-1.5-flash
+GEMINI_MODEL=gemini-2.5-flash
 TWILIO_ACCOUNT_SID=your_actual_twilio_account_sid_here
 TWILIO_AUTH_TOKEN=your_actual_twilio_auth_token_here
 ```
