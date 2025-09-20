@@ -1,18 +1,19 @@
 # WhatsApp Chatbot with FastAPI, Twilio, and LangChain
 
-A WhatsApp chatbot that uses FastAPI as the web framework, Twilio for WhatsApp integration, and LangChain with Google's Gemini LLM to handle user messages. The bot includes conversation memory, multimodal image processing, and document-based question answering using RAG (Retrieval-Augmented Generation).
+A WhatsApp chatbot that uses FastAPI as the web framework, Twilio for WhatsApp integration, and LangChain with Google's Gemini LLM to handle user messages. The bot includes conversation memory, multimodal image processing, audio processing and document-based question answering using RAG (Retrieval-Augmented Generation).
 
 ## Demo Video
 
-[![Watch the demo](https://img.youtube.com/vi/YOUTUBE_VIDEO_ID/0.jpg)](https://www.youtube.com/watch?v=YOUTUBE_VIDEO_ID)
+[![Watch the demo](https://img.youtube.com/vi/TnD4wCzdE6o/0.jpg)](https://www.youtube.com/watch?v=TnD4wCzdE6o)
 
-Click the image above to watch the demo video.
+Click the image above to watch the demo video(watch in 1.5x).
 
 ## Features
 
 - 🤖 **AI-Powered Responses**: Uses Google's Gemini models for intelligent conversation  
 - 💬 **Conversation Memory**: Remembers the last 5 conversation turns with each user  
-- 🖼️ **Image Processing**: Analyzes and describes images using Gemini 1.5 multimodal  
+- 🖼️ **Image Processing**: Analyzes and describes images using Gemini 2.5 multimodal
+- 🎙️ Audio Message Processing: Transcribes and responds to voice messages sent via WhatsApp using Gemini’s transcription capabilities  
 - 📄 **Document Upload & RAG Q&A**: Users can upload PDFs; the bot indexes the content enabling question answering based on the document  
 - 🎯 **Motivational Coach Personality**: Provides supportive, encouraging responses  
 - 📱 **WhatsApp Integration**: Seamless Twilio webhook integration  
@@ -123,7 +124,7 @@ The bot maintains conversation memory using LangChain's `ConversationBufferWindo
 | `GOOGLE_API_KEY` | Your Google API key (Gemini) | Yes |
 | `TWILIO_ACCOUNT_SID` | Your Twilio Account SID | Yes |
 | `TWILIO_AUTH_TOKEN` | Your Twilio Auth Token | Yes |
-| `GEMINI_MODEL` | Gemini model to use (default: gemini-1.5-flash) | No |
+| `GEMINI_MODEL` | Gemini model to use (default: gemini-2.5-flash) | No |
 
 ## Troubleshooting
 
@@ -146,7 +147,3 @@ The bot maintains conversation memory using LangChain's `ConversationBufferWindo
 3. Make your changes  
 4. Add tests if applicable  
 5. Submit a pull request  
-
-## License
-
-This project is licensed under the MIT License.
