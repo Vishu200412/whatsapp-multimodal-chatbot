@@ -1,22 +1,27 @@
 # WhatsApp Chatbot with FastAPI, Twilio, and LangChain
 
-A production-ready WhatsApp chatbot that uses FastAPI as the web framework, Twilio for WhatsApp integration, and LangChain with Google's Gemini LLM to handle user messages. The bot includes conversation memory and multimodal image processing capabilities.
+A WhatsApp chatbot that uses FastAPI as the web framework, Twilio for WhatsApp integration, and LangChain with Google's Gemini LLM to handle user messages. The bot includes conversation memory, multimodal image processing, and document-based question answering using RAG (Retrieval-Augmented Generation).
+
+## Demo Video
+
+[![Watch the demo](https://img.youtube.com/vi/YOUTUBE_VIDEO_ID/0.jpg)](https://www.youtube.com/watch?v=YOUTUBE_VIDEO_ID)
+
+Click the image above to watch the demo video.
 
 ## Features
 
-- 🤖 **AI-Powered Responses**: Uses Google's Gemini models for intelligent conversation
-- 💬 **Conversation Memory**: Remembers the last 5 conversation turns with each user
-- 🖼️ **Image Processing**: Analyzes and describes images using Gemini 1.5 multimodal
-- 🎯 **Motivational Coach Personality**: Provides supportive, encouraging responses
-- 🐳 **Docker Ready**: Fully containerized for easy deployment
-- 📱 **WhatsApp Integration**: Seamless Twilio webhook integration
+- 🤖 **AI-Powered Responses**: Uses Google's Gemini models for intelligent conversation  
+- 💬 **Conversation Memory**: Remembers the last 5 conversation turns with each user  
+- 🖼️ **Image Processing**: Analyzes and describes images using Gemini 1.5 multimodal  
+- 📄 **Document Upload & RAG Q&A**: Users can upload PDFs; the bot indexes the content enabling question answering based on the document  
+- 🎯 **Motivational Coach Personality**: Provides supportive, encouraging responses  
+- 📱 **WhatsApp Integration**: Seamless Twilio webhook integration  
 
 ## Prerequisites
 
-- Python 3.11+
-- Google API key (for Gemini)
-- Twilio account with WhatsApp Sandbox or Business API access
-- Docker (optional, for containerized deployment)
+- Python 3.11+  
+- Google API key (for Gemini)  
+- Twilio account with WhatsApp Sandbox or Business API access  
 
 ## Setup Instructions
 
@@ -30,6 +35,7 @@ cd whatsapp-chatbot
 ### 2. Environment Configuration
 
 Create a `.env` file in the project root with:
+
 ```env
 GOOGLE_API_KEY=your_actual_google_api_key_here
 GEMINI_MODEL=gemini-1.5-flash
@@ -46,98 +52,69 @@ pip install -r requirements.txt
 ### 4. Run Locally
 
 ```bash
-python main.py
+uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Or using uvicorn directly:
-```bash
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-The application will be available at `http://localhost:8000`
+The application will be available at `http://localhost:8000`.
 
 ### 5. Twilio Webhook Configuration
 
-1. In your Twilio Console, go to your WhatsApp Sandbox or Business API
-2. Set the webhook URL to: `https://your-domain.com/webhook`
-3. For local testing, use ngrok or similar tunneling service:
+1. In your Twilio Console, go to your WhatsApp Sandbox or Business API  
+2. Set the webhook URL to: `https://your-domain.com/webhook`  
+3. For local testing, use ngrok or a similar tunneling service:  
    ```bash
    ngrok http 8000
    ```
    Then use the ngrok URL: `https://your-ngrok-url.ngrok.io/webhook`
 
-## Docker Deployment
-
-### Build the Docker Image
-
-```bash
-docker build -t whatsapp-chatbot .
-```
-
-### Run the Container
-
-```bash
-docker run -d \
-  --name whatsapp-chatbot \
-  -p 8000:8000 \
-  --env-file .env \
-  whatsapp-chatbot
-```
-
-### Docker Compose (Alternative)
-
-Create a `docker-compose.yml` file:
-
-```yaml
-version: '3.8'
-services:
-  whatsapp-chatbot:
-    build: .
-    ports:
-      - "8000:8000"
-    env_file:
-      - .env
-    restart: unless-stopped
-```
-
-Then run:
-```bash
-docker-compose up -d
-```
-
 ## API Endpoints
 
 ### Webhook Endpoint
-- **POST** `/webhook` - Twilio webhook for incoming WhatsApp messages
+
+- **POST** `/webhook` - Twilio webhook for incoming WhatsApp messages  
 
 ### Debug Endpoints
-- **GET** `/` - Health check
-- **GET** `/memory/{phone_number}` - View conversation memory for a user
-- **DELETE** `/memory/{phone_number}` - Clear conversation memory for a user
+
+- **GET** `/` - Health check  
+- **GET** `/memory/{phone_number}` - View conversation memory for a user  
+- **DELETE** `/memory/{phone_number}` - Clear conversation memory for a user  
+- **GET** `/rag/{phone_number}` - View document RAG info for a user  
+- **DELETE** `/rag/{phone_number}` - Clear document RAG data for a user  
 
 ## How It Works
 
-1. **Message Reception**: Twilio sends incoming WhatsApp messages to the `/webhook` endpoint
-2. **Message Processing**: 
-   - For images: Uses Gemini 1.5 to analyze and describe the image
-   - For text: Uses conversation memory and GPT model to generate responses
-3. **Memory Management**: Stores conversation history per user phone number
-4. **Response Generation**: Formats responses as TwiML and sends back via Twilio
+1. **Message Reception**: Twilio sends incoming WhatsApp messages to the `/webhook` endpoint  
+2. **Message Processing**:  
+   - For images: Uses Gemini 1.5 multimodal to analyze and describe the image  
+   - For PDFs: Downloads and processes documents to create vector embeddings and summaries  
+   - For text: Uses conversation memory, document retrieval (if applicable), and Gemini LLM to generate responses  
+3. **Memory Management**: Stores per-user conversation history keyed by phone number  
+4. **RAG (Document Q&A)**: Enables users to ask questions about uploaded PDF documents. The bot uses similarity search on embedded chunks and generates answers based on document context with a motivational coaching tone  
+5. **Response Generation**: Formats all responses as TwiML and sends them back via Twilio  
 
 ## Conversation Memory
 
-The bot maintains conversation memory using LangChain's `ConversationBufferMemory`:
-- Stores last 5 conversation turns per user
-- Keyed by user's phone number (`From` field)
-- Automatically manages context for coherent conversations
+The bot maintains conversation memory using LangChain's `ConversationBufferWindowMemory`:  
+
+- Stores last 7 conversation turns per user  
+- Keyed by user's phone number (the `From` field in WhatsApp)  
+- Automatically manages context for coherent conversations  
+
+## Document Upload and RAG Q&A
+
+- Users can upload PDF documents via WhatsApp  
+- The bot downloads and splits the document into chunks, then creates embeddings using HuggingFace embeddings  
+- These vectors are stored in a FAISS vector store for quick similarity search  
+- The bot generates a brief document summary using Gemini LLM  
+- When users ask questions related to the uploaded document, the bot retrieves relevant document chunks and generates targeted answers based on document content  
+- This process allows contextual and accurate Q&A about user-provided documents, making the chatbot highly versatile  
 
 ## Image Processing
 
-When users send images:
-- Bot detects image attachments via `NumMedia` parameter
-- Downloads image from Twilio's `MediaUrl0`
-- Uses GPT-4 Vision to generate detailed descriptions
-- Provides motivational coaching context around the image
+- Detects image or video attachments sent in WhatsApp messages  
+- Downloads the media via Twilio with authentication  
+- Uses Gemini 1.5 multimodal LLM to analyze the image and answer user questions related to it  
+- Responds with an encouraging, motivational coaching style  
 
 ## Environment Variables
 
@@ -150,58 +127,26 @@ When users send images:
 
 ## Troubleshooting
 
-### Common Issues
-
-1. **Webhook not receiving messages**
-   - Verify Twilio webhook URL is correctly configured
-   - Check that your server is accessible from the internet
-   - Ensure HTTPS is used (required by Twilio)
-
-2. **Gemini API errors**
-   - Verify your `GOOGLE_API_KEY` is correct and has sufficient quota
-   - Check rate limits and usage quotas in your Google AI Studio project
-
-3. **Memory issues**
-   - Use debug endpoints to inspect conversation memory
-   - Clear memory if needed using DELETE endpoint
-
-### Logs
-
-The application logs all incoming messages and errors. Check the console output for debugging information.
+- **Webhook not receiving messages**: Verify webhook URL, server accessibility, and HTTPS usage  
+- **Gemini API errors**: Check API key correctness and quota limits  
+- **Memory issues**: Use debug endpoints to inspect and clear memory if needed  
+- **Document processing errors**: Ensure PDF is text-based and under 10MB, retry on network issues  
 
 ## Security Considerations
 
-- Never commit `.env` file to version control
-- Use environment variables for all sensitive data
-- Consider implementing rate limiting for production use
-- Validate and sanitize all incoming webhook data
+- Never commit `.env` file to version control  
+- Use environment variables for sensitive data  
+- Validate all incoming webhook data  
+- Consider rate limiting for production use  
 
-## Production Deployment
+## Contributing
 
-For production deployment:
-
-1. Use a proper web server (nginx) as reverse proxy
-2. Implement proper logging and monitoring
-3. Set up SSL certificates
-4. Configure proper backup strategies for conversation memory
-5. Implement rate limiting and abuse prevention
-6. Use a proper database for persistent memory storage
+1. Fork the repository  
+2. Create a feature branch  
+3. Make your changes  
+4. Add tests if applicable  
+5. Submit a pull request  
 
 ## License
 
 This project is licensed under the MIT License.
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
-
-## Support
-
-For issues and questions:
-- Check the troubleshooting section
-- Review Twilio and Google Gemini documentation
-- Open an issue in the repository
